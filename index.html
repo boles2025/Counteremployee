@@ -287,32 +287,30 @@
         document.getElementById('waitingCount').textContent = snapshot.numChildren();
       });
 
-      db.ref('currentCall').on('value', (snapshot) => {
+      db.ref('counters/' + currentCounter).on('value', (snapshot) => {
         const data = snapshot.val();
-        if (data && data.number && data.number > 0) {
-          currentCallData = data;
+        const card = document.getElementById('currentCallCard');
+        if (data && data.status === 'busy' && data.number > 0) {
+          currentCallData = { number: data.number, counter: currentCounter };
           document.getElementById('currentNumber').textContent = data.number;
-          document.getElementById('lastCalledNumber').textContent = data.number;
-
-          const card = document.getElementById('currentCallCard');
-          if (String(data.counter) === String(currentCounter)) {
-            card.classList.add('serving');
-            document.getElementById('currentStatus').textContent = 'في خدمة هذا المكتب';
-            document.getElementById('endBtn').disabled = false;
-            document.getElementById('transferBtn').disabled = false;
-          } else {
-            card.classList.remove('serving');
-            const cName = countersConfig[String(data.counter)] || ('مكتب ' + data.counter);
-            document.getElementById('currentStatus').textContent = cName;
-            document.getElementById('endBtn').disabled = true;
-            document.getElementById('transferBtn').disabled = true;
-          }
+          card.classList.add('serving');
+          document.getElementById('currentStatus').textContent = 'في خدمة هذا المكتب';
+          document.getElementById('endBtn').disabled = false;
+          document.getElementById('transferBtn').disabled = false;
         } else {
           currentCallData = null;
           document.getElementById('currentNumber').textContent = '--';
           document.getElementById('currentStatus').textContent = 'لم يتم استدعاء أي رقم بعد';
+          card.classList.remove('serving');
           document.getElementById('endBtn').disabled = true;
           document.getElementById('transferBtn').disabled = true;
+        }
+      });
+
+      db.ref('currentCall').on('value', (snapshot) => {
+        const data = snapshot.val();
+        if (data && data.number > 0) {
+          document.getElementById('lastCalledNumber').textContent = data.number;
         }
       });
     }
@@ -321,34 +319,43 @@
       const btn = document.getElementById('callBtn');
       btn.disabled = true;
 
-      db.ref('tokens/waitingList').orderByValue().limitToFirst(1).once('value', (snapshot) => {
-        if (!snapshot.exists()) {
+      db.ref('tokens/waitingList').orderByValue().limitToFirst(1).once('value', (snap) => {
+        if (!snap.exists()) {
           showToast('لا يوجد منتظرين', 'warning');
           btn.disabled = false;
           return;
         }
 
-        const data = snapshot.val();
+        const data = snap.val();
         const key = Object.keys(data)[0];
         const number = data[key];
 
-        const updates = {};
-        updates['tokens/waitingList/' + key] = null;
-        updates['currentCall/number'] = number;
-        updates['currentCall/counter'] = currentCounter;
-        updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
-        updates['counters/' + currentCounter + '/number'] = number;
-        updates['counters/' + currentCounter + '/status'] = 'busy';
+        db.ref('tokens/waitingList/' + key).transaction(function(currentValue) {
+          if (currentValue === null) return;
+          return null;
+        }, function(error, committed) {
+          if (!committed || error) {
+            showToast('الرقم تم استدعاؤه بالفعل من مكتب آخر', 'warning');
+            btn.disabled = false;
+            return;
+          }
 
-        db.ref().update(updates).then(() => {
-          servedCount++;
-          document.getElementById('totalServed').textContent = servedCount;
-          showToast('تم استدعاء الرقم ' + number, 'success');
-          btn.disabled = false;
-        }).catch((error) => {
-          console.error(error);
-          showToast('حدث خطأ', 'error');
-          btn.disabled = false;
+          const updates = {};
+          updates['currentCall/number'] = number;
+          updates['currentCall/counter'] = currentCounter;
+          updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
+          updates['counters/' + currentCounter + '/number'] = number;
+          updates['counters/' + currentCounter + '/status'] = 'busy';
+
+          db.ref().update(updates).then(() => {
+            servedCount++;
+            document.getElementById('totalServed').textContent = servedCount;
+            showToast('تم استدعاء الرقم ' + number, 'success');
+            btn.disabled = false;
+          }).catch(() => {
+            showToast('حدث خطأ', 'error');
+            btn.disabled = false;
+          });
         });
       });
     }
@@ -356,13 +363,18 @@
     function endService() {
       if (!currentCallData || !currentCallData.number) return;
       const updates = {};
-      updates['currentCall/number'] = 0;
-      updates['currentCall/counter'] = currentCounter;
-      updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
       updates['counters/' + currentCounter + '/number'] = 0;
       updates['counters/' + currentCounter + '/status'] = 'idle';
-      db.ref().update(updates).then(() => {
-        showToast('تم إنهاء الخدمة', 'success');
+      db.ref('currentCall').once('value', snap => {
+        const cc = snap.val();
+        if (cc && String(cc.counter) === String(currentCounter)) {
+          updates['currentCall/number'] = 0;
+          updates['currentCall/counter'] = currentCounter;
+          updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
+        }
+        db.ref().update(updates).then(() => {
+          showToast('تم إنهاء الخدمة', 'success');
+        });
       });
     }
 
@@ -398,13 +410,13 @@
       if (!transferTarget || !currentCallData) return;
       const number = currentCallData.number;
       const updates = {};
-      updates['currentCall/number'] = 0;
-      updates['currentCall/counter'] = currentCounter;
-      updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
       updates['counters/' + currentCounter + '/number'] = 0;
       updates['counters/' + currentCounter + '/status'] = 'idle';
       updates['counters/' + transferTarget + '/number'] = number;
       updates['counters/' + transferTarget + '/status'] = 'busy';
+      updates['currentCall/number'] = number;
+      updates['currentCall/counter'] = transferTarget;
+      updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
       db.ref().update(updates).then(() => {
         closeTransfer();
         const tName = countersConfig[transferTarget] || ('المكتب ' + transferTarget);
