@@ -63,10 +63,13 @@
       display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
     .current-call-card.serving { border-color: rgba(78,204,163,0.5); }
+    .current-call-card.stopped { border-color: rgba(231,76,60,0.5); }
     .current-call-card .label { font-size: 1.2rem; color: #8888aa; margin-bottom: 0.5rem; }
     .current-call-card .number { font-size: 6rem; font-weight: 900; color: #ffd700; line-height: 1; text-shadow: 0 0 30px rgba(255,215,0,0.3); }
     .current-call-card.serving .number { color: #4ecca3; text-shadow: 0 0 30px rgba(78,204,163,0.3); }
+    .current-call-card.stopped .number { color: #e74c3c; text-shadow: 0 0 30px rgba(231,76,60,0.3); }
     .current-call-card .status { font-size: 1rem; color: #666688; margin-top: 0.5rem; }
+    .current-call-card.stopped .status { color: #e74c3c; }
 
     .action-buttons { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
 
@@ -82,6 +85,8 @@
     .btn-call:hover { box-shadow: 0 8px 25px rgba(78,204,163,0.4); }
     .btn-end { background: linear-gradient(135deg, #ffd700, #e6b800); color: #0a0a23; }
     .btn-end:hover { box-shadow: 0 8px 25px rgba(255,215,0,0.4); }
+    .btn-active { background: linear-gradient(135deg, #4ecca3, #36b37e); color: #fff; }
+    .btn-active:hover { box-shadow: 0 8px 25px rgba(78,204,163,0.4); }
     .btn-transfer { background: linear-gradient(135deg, #9b59b6, #8e44ad); }
     .btn-transfer:hover { box-shadow: 0 8px 25px rgba(155,89,182,0.4); }
 
@@ -169,8 +174,8 @@
         <button class="btn-main btn-call" id="callBtn" onclick="callNext()">
           <span style="font-size:1.5rem;">&#9654;</span> استدعاء التالي
         </button>
-        <button class="btn-main btn-end" id="endBtn" onclick="endService()" disabled>
-          &#10003; إنهاء الخدمة
+        <button class="btn-main btn-end" id="endBtn" onclick="endService()">
+          &#10004; متوقف
         </button>
         <button class="btn-main btn-transfer" id="transferBtn" onclick="openTransfer()" disabled>
           &#8644; تحويل لمكتب آخر
@@ -185,10 +190,6 @@
         <div class="stat-card">
           <div class="stat-value" id="lastCalledNumber">--</div>
           <div class="stat-label">آخر رقم تم استدعاؤه</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value" id="totalServed">0</div>
-          <div class="stat-label">تمت خدمتهم</div>
         </div>
       </div>
     </div>
@@ -216,7 +217,6 @@
     let currentCounter = null;
     let currentCounterName = '';
     let currentCallData = null;
-    let servedCount = 0;
     let transferTarget = null;
     let countersConfig = {};
     const COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e','#16a085','#c0392b'];
@@ -290,19 +290,36 @@
       db.ref('counters/' + currentCounter).on('value', (snapshot) => {
         const data = snapshot.val();
         const card = document.getElementById('currentCallCard');
+        const endBtn = document.getElementById('endBtn');
         if (data && data.status === 'busy' && data.number > 0) {
           currentCallData = { number: data.number, counter: currentCounter };
           document.getElementById('currentNumber').textContent = data.number;
           card.classList.add('serving');
+          card.classList.remove('stopped');
           document.getElementById('currentStatus').textContent = 'في خدمة هذا المكتب';
-          document.getElementById('endBtn').disabled = false;
+          endBtn.disabled = false;
+          endBtn.innerHTML = '&#10004; متوقف';
+          endBtn.className = 'btn-main btn-end';
           document.getElementById('transferBtn').disabled = false;
+        } else if (data && data.status === 'stopped') {
+          currentCallData = null;
+          document.getElementById('currentNumber').textContent = '--';
+          card.classList.remove('serving');
+          card.classList.add('stopped');
+          document.getElementById('currentStatus').textContent = 'المكتب متوقف';
+          endBtn.disabled = false;
+          endBtn.innerHTML = '&#9654; نشط';
+          endBtn.className = 'btn-main btn-active';
+          document.getElementById('transferBtn').disabled = true;
         } else {
           currentCallData = null;
           document.getElementById('currentNumber').textContent = '--';
-          document.getElementById('currentStatus').textContent = 'لم يتم استدعاء أي رقم بعد';
           card.classList.remove('serving');
-          document.getElementById('endBtn').disabled = true;
+          card.classList.remove('stopped');
+          document.getElementById('currentStatus').textContent = 'لم يتم استدعاء أي رقم بعد';
+          endBtn.disabled = false;
+          endBtn.innerHTML = '&#10004; متوقف';
+          endBtn.className = 'btn-main btn-end';
           document.getElementById('transferBtn').disabled = true;
         }
       });
@@ -348,8 +365,6 @@
           updates['counters/' + currentCounter + '/status'] = 'busy';
 
           db.ref().update(updates).then(() => {
-            servedCount++;
-            document.getElementById('totalServed').textContent = servedCount;
             showToast('تم استدعاء الرقم ' + number, 'success');
             btn.disabled = false;
           }).catch(() => {
@@ -361,21 +376,31 @@
     }
 
     function endService() {
-      if (!currentCallData || !currentCallData.number) return;
-      const updates = {};
-      updates['counters/' + currentCounter + '/number'] = 0;
-      updates['counters/' + currentCounter + '/status'] = 'idle';
-      db.ref('currentCall').once('value', snap => {
-        const cc = snap.val();
-        if (cc && String(cc.counter) === String(currentCounter)) {
-          updates['currentCall/number'] = 0;
-          updates['currentCall/counter'] = currentCounter;
-          updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
-        }
+      const card = document.getElementById('currentCallCard');
+      const isStopped = card.classList.contains('stopped');
+
+      if (isStopped) {
+        const updates = {};
+        updates['counters/' + currentCounter + '/status'] = 'idle';
         db.ref().update(updates).then(() => {
-          showToast('تم إنهاء الخدمة', 'success');
+          showToast('تم تفعيل المكتب', 'success');
         });
-      });
+      } else {
+        const updates = {};
+        updates['counters/' + currentCounter + '/number'] = 0;
+        updates['counters/' + currentCounter + '/status'] = 'stopped';
+        db.ref('currentCall').once('value', snap => {
+          const cc = snap.val();
+          if (cc && String(cc.counter) === String(currentCounter)) {
+            updates['currentCall/number'] = 0;
+            updates['currentCall/counter'] = currentCounter;
+            updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
+          }
+          db.ref().update(updates).then(() => {
+            showToast('تم إيقاف المكتب', 'success');
+          });
+        });
+      }
     }
 
     function openTransfer() {
