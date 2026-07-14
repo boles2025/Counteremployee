@@ -412,18 +412,9 @@
         });
       } else {
         const updates = {};
-        updates['counters/' + currentCounter + '/number'] = 0;
         updates['counters/' + currentCounter + '/status'] = 'stopped';
-        db.ref('currentCall').once('value', snap => {
-          const cc = snap.val();
-          if (cc && String(cc.counter) === String(currentCounter)) {
-            updates['currentCall/number'] = 0;
-            updates['currentCall/counter'] = currentCounter;
-            updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
-          }
-          db.ref().update(updates).then(() => {
-            showToast('تم إيقاف المكتب', 'success');
-          });
+        db.ref().update(updates).then(() => {
+          showToast('تم إيقاف المكتب', 'success');
         });
       }
     }
