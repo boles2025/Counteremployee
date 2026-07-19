@@ -239,7 +239,13 @@
     let currentCallData = null;
     let transferTarget = null;
     let countersConfig = {};
+    let currentMode = 'print';
     const COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e','#16a085','#c0392b'];
+
+    /* Load mode */
+    db.ref('settings/mode').on('value', snap => {
+      currentMode = snap.val() || 'print';
+    });
 
     /* Load counters from Firebase */
     db.ref('settings/counters').on('value', snap => {
@@ -303,9 +309,15 @@
     }
 
     function setupListeners() {
-      db.ref('tokens/waitingList').on('value', (snapshot) => {
-        document.getElementById('waitingCount').textContent = snapshot.numChildren();
-      });
+      if (currentMode === 'manual') {
+        const wc = document.getElementById('waitingCount');
+        wc.textContent = '∞';
+        wc.parentElement.querySelector('.stat-label').textContent = 'وضع يدوي (بدون انتظار)';
+      } else {
+        db.ref('tokens/waitingList').on('value', (snapshot) => {
+          document.getElementById('waitingCount').textContent = snapshot.numChildren();
+        });
+      }
 
       db.ref('counters/' + currentCounter).on('value', (snapshot) => {
         const data = snapshot.val();
@@ -357,9 +369,42 @@
       btn.disabled = true;
       attempt = attempt || 0;
 
+      if (currentMode === 'manual') {
+        const ref = db.ref('tokens/lastNumber');
+        ref.transaction(function(cur) {
+          return (typeof cur === 'number' ? cur : 0) + 1;
+        }, function(err, committed, snap) {
+          if (err || !committed) {
+            if (attempt < 5) { setTimeout(function() { callNext(attempt + 1); }, 200); }
+            else { showToast('حدث خطأ', 'error'); btn.disabled = false; }
+            return;
+          }
+          const number = snap.val();
+
+          const updates = {};
+          updates['currentCall/number'] = number;
+          updates['currentCall/counter'] = currentCounter;
+          updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
+          updates['counters/' + currentCounter + '/number'] = number;
+          updates['counters/' + currentCounter + '/status'] = 'busy';
+
+          db.ref().update(updates).then(() => {
+            showToast('تم استدعاء الرقم ' + number, 'success');
+            btn.disabled = false;
+          }).catch(() => {
+            showToast('حدث خطأ', 'error');
+            btn.disabled = false;
+          });
+        });
+        return;
+      }
+
       db.ref('tokens/waitingList').orderByValue().limitToFirst(1).once('value', (snap) => {
         if (!snap.exists()) {
-          showToast('لا يوجد منتظرين', 'warning');
+          showToast('لا يوجد منتظرين حالياً', 'warning');
+          document.getElementById('currentNumber').textContent = '--';
+          document.getElementById('currentStatus').textContent = 'لا يوجد منتظرين';
+          document.getElementById('currentCallCard').className = 'current-call-card stopped';
           btn.disabled = false;
           return;
         }
