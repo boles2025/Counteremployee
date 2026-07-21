@@ -194,6 +194,9 @@
         <button class="btn-main btn-call" id="callBtn" onclick="callNext()">
           <span style="font-size:1.5rem;">&#9654;</span> استدعاء التالي
         </button>
+        <button class="btn-main" id="recallBtn" onclick="reCallCurrent()" style="background:linear-gradient(135deg, #3498db, #2980b9);" disabled>
+          &#128276; إعادة نداء
+        </button>
         <button class="btn-main btn-end" id="endBtn" onclick="endService()">
           &#10004; متوقف
         </button>
@@ -327,6 +330,7 @@
         const data = snapshot.val();
         const card = document.getElementById('currentCallCard');
         const endBtn = document.getElementById('endBtn');
+        const recallBtn = document.getElementById('recallBtn');
         if (data && data.status === 'busy' && data.number > 0) {
           currentCallData = { number: data.number, counter: currentCounter };
           document.getElementById('currentNumber').textContent = data.number;
@@ -336,6 +340,7 @@
           endBtn.disabled = false;
           endBtn.innerHTML = '&#10004; متوقف';
           endBtn.className = 'btn-main btn-end';
+          if (recallBtn) recallBtn.disabled = false;
           document.getElementById('transferBtn').disabled = false;
         } else if (data && data.status === 'stopped') {
           currentCallData = null;
@@ -346,6 +351,7 @@
           endBtn.disabled = false;
           endBtn.innerHTML = '&#9654; نشط';
           endBtn.className = 'btn-main btn-active';
+          if (recallBtn) recallBtn.disabled = true;
           document.getElementById('transferBtn').disabled = true;
         } else {
           currentCallData = null;
@@ -356,6 +362,7 @@
           endBtn.disabled = false;
           endBtn.innerHTML = '&#10004; متوقف';
           endBtn.className = 'btn-main btn-end';
+          if (recallBtn) recallBtn.disabled = true;
           document.getElementById('transferBtn').disabled = true;
         }
       });
@@ -368,10 +375,21 @@
       });
     }
 
-    function callNext(attempt) {
+    let isCallingNext = false;
+
+    function callNext() {
+      if (isCallingNext) return;
+      isCallingNext = true;
+
       const btn = document.getElementById('callBtn');
-      btn.disabled = true;
-      attempt = attempt || 0;
+      if (btn) btn.disabled = true;
+
+      function unlock() {
+        isCallingNext = false;
+        setTimeout(function() {
+          if (btn) btn.disabled = false;
+        }, 500);
+      }
 
       if (currentMode === 'manual') {
         const ref = db.ref('tokens/lastNumber');
@@ -379,76 +397,107 @@
           return (typeof cur === 'number' ? cur : 0) + 1;
         }, function(err, committed, snap) {
           if (err || !committed) {
-            if (attempt < 5) { setTimeout(function() { callNext(attempt + 1); }, 200); }
-            else { showToast('حدث خطأ', 'error'); btn.disabled = false; }
+            showToast('حدث خطأ في جلب الرقم', 'error');
+            unlock();
             return;
           }
           const number = snap.val();
 
+          const callKey = db.ref('callQueue').push().key;
+          const payload = {
+            id: callKey,
+            number: number,
+            counter: currentCounter,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+          };
+
           const updates = {};
-          updates['currentCall/number'] = number;
-          updates['currentCall/counter'] = currentCounter;
-          updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
+          updates['currentCall'] = payload;
+          updates['callQueue/' + callKey] = payload;
           updates['counters/' + currentCounter + '/number'] = number;
           updates['counters/' + currentCounter + '/status'] = 'busy';
           updates['counters/' + currentCounter + '/served'] = firebase.database.ServerValue.increment(1);
 
           db.ref().update(updates).then(function() {
             showToast('تم استدعاء الرقم ' + number, 'success');
-            setTimeout(function() { btn.disabled = false; }, callDelay);
+            unlock();
           }).catch(function() {
-            showToast('حدث خطأ', 'error');
-            btn.disabled = false;
+            showToast('حدث خطأ في الشبكة', 'error');
+            unlock();
           });
         });
         return;
       }
 
       db.ref('tokens/waitingList').orderByValue().limitToFirst(1).once('value', function(snap) {
-      if (!snap.exists()) {
-        showToast('لا يوجد منتظرين حالياً', 'warning');
-        document.getElementById('currentNumber').textContent = '--';
-        document.getElementById('currentStatus').textContent = 'لا يوجد منتظرين';
-        document.getElementById('currentCallCard').className = 'current-call-card stopped';
-        btn.disabled = false;
-        return;
-      }
-
-      const data = snap.val();
-      const key = Object.keys(data)[0];
-      const number = data[key];
-
-      db.ref('tokens/waitingList/' + key).transaction(function(currentValue) {
-        if (currentValue === null) return;
-        return null;
-      }, function(error, committed) {
-        if (!committed || error) {
-          if (attempt < 5) {
-            setTimeout(function() { callNext(attempt + 1); }, 200);
-          } else {
-            showToast('لا يوجد منتظرين حالياً', 'warning');
-            btn.disabled = false;
-          }
+        if (!snap.exists()) {
+          showToast('لا يوجد منتظرين حالياً', 'warning');
+          document.getElementById('currentNumber').textContent = '--';
+          document.getElementById('currentStatus').textContent = 'لا يوجد منتظرين';
+          document.getElementById('currentCallCard').className = 'current-call-card stopped';
+          unlock();
           return;
         }
 
-        const updates = {};
-        updates['currentCall/number'] = number;
-        updates['currentCall/counter'] = currentCounter;
-        updates['currentCall/timestamp'] = firebase.database.ServerValue.TIMESTAMP;
-        updates['counters/' + currentCounter + '/number'] = number;
-        updates['counters/' + currentCounter + '/status'] = 'busy';
-        updates['counters/' + currentCounter + '/served'] = firebase.database.ServerValue.increment(1);
+        const data = snap.val();
+        const key = Object.keys(data)[0];
+        const number = data[key];
 
-        db.ref().update(updates).then(function() {
-          showToast('تم استدعاء الرقم ' + number, 'success');
-          setTimeout(function() { btn.disabled = false; }, callDelay);
-        }).catch(function() {
-          showToast('حدث خطأ', 'error');
-          btn.disabled = false;
+        db.ref('tokens/waitingList/' + key).transaction(function(currentValue) {
+          if (currentValue === null) return undefined;
+          return null;
+        }, function(error, committed) {
+          if (error || !committed) {
+            isCallingNext = false;
+            setTimeout(callNext, 100);
+            return;
+          }
+
+          const callKey = db.ref('callQueue').push().key;
+          const payload = {
+            id: callKey,
+            number: number,
+            counter: currentCounter,
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+          };
+
+          const updates = {};
+          updates['currentCall'] = payload;
+          updates['callQueue/' + callKey] = payload;
+          updates['counters/' + currentCounter + '/number'] = number;
+          updates['counters/' + currentCounter + '/status'] = 'busy';
+          updates['counters/' + currentCounter + '/served'] = firebase.database.ServerValue.increment(1);
+
+          db.ref().update(updates).then(function() {
+            showToast('تم استدعاء الرقم ' + number, 'success');
+            unlock();
+          }).catch(function() {
+            showToast('حدث خطأ في الشبكة', 'error');
+            unlock();
+          });
         });
       });
-    });
+    }
+
+    function reCallCurrent() {
+      if (!currentCallData || !currentCallData.number) {
+        showToast('لا يوجد رقم حالي لإعادة النداء', 'warning');
+        return;
+      }
+      const number = currentCallData.number;
+      const callKey = db.ref('callQueue').push().key;
+      const payload = {
+        id: callKey,
+        number: number,
+        counter: currentCounter,
+        timestamp: firebase.database.ServerValue.TIMESTAMP
+      };
+      const updates = {};
+      updates['currentCall'] = payload;
+      updates['callQueue/' + callKey] = payload;
+      db.ref().update(updates).then(() => {
+        showToast('تم إعادة نداء الرقم ' + number, 'success');
+      }).catch(() => showToast('حدث خطأ', 'error'));
     }
 
     function endService() {
@@ -458,12 +507,14 @@
       if (isStopped) {
         const updates = {};
         updates['counters/' + currentCounter + '/status'] = 'idle';
+        updates['counters/' + currentCounter + '/number'] = 0;
         db.ref().update(updates).then(() => {
           showToast('تم تفعيل المكتب', 'success');
         });
       } else {
         const updates = {};
         updates['counters/' + currentCounter + '/status'] = 'stopped';
+        updates['counters/' + currentCounter + '/number'] = 0;
         db.ref().update(updates).then(() => {
           showToast('تم إيقاف المكتب', 'success');
         });
